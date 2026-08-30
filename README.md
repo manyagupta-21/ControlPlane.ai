@@ -205,7 +205,7 @@ this step is what makes the arithmetic legitimate.
 | Expected calibration error | 0.483 | 0.125 |
 
 Abstaining on the least confident 20% of cases lifts accuracy from 82% to 85%.
-Abstaining on 40% lifts it to 90%, which says the cases the system is unsure
+Abstaining on 40% lifts it to 90% , which says the cases the system is unsure
 about really are the ones it gets wrong.
 
 ### Loss back test
