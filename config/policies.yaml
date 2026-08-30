@@ -1,0 +1,81 @@
+# ControlPlane governance policy.
+#
+# Risk appetite is stated as WHAT THE OUTCOMES COST, not as a chosen cut-point.
+# The allow / edit / review / block bands are DERIVED at load time by minimising
+# expected loss under the calibrated harm probability (controlplane/decision_theory.py).
+# Change a cost, and the thresholds move — reproducibly, and with a stated reason.
+#
+# costs:
+#   serve_bad     cost of a harmful response reaching a user who acts on it
+#   block_good    cost of withholding a response that was actually fine
+#   review        cost of one human reviewer touching one item
+#   caveat        friction of an unnecessary warning label
+#   resid_edit    fraction of harm that survives a caveat        (0-1)
+#   resid_review  fraction of harm a human reviewer still misses (0-1)
+#
+# hard_rules = flag-based overrides that escalate the action to at least `action`,
+# regardless of the score. These encode obligations that are not negotiable at any
+# price (e.g. PII leaving a customer-facing surface).
+
+default_use_case: internal_copilot
+
+use_cases:
+
+  customer_facing:
+    description: >
+      External chatbot. A wrong or unsafe answer is seen by a customer and may be
+      acted on; remediation is public. High cost of a bad answer, low cost of
+      withholding one, so the derived bands are tight.
+    latency_budget_ms: 800
+    weights: {performance: 1.0, responsibility: 1.0}
+    costs:
+      serve_bad: 500      # wrong/unsafe answer acted on by a customer
+      block_good: 120     # lost resolution, escalation to a human agent
+      review: 40          # loaded reviewer cost incl. queue delay
+      caveat: 16          # credibility + alert-fatigue cost of a needless warning
+      resid_edit: 0.40
+      resid_review: 0.05
+    hard_rules:
+      - {if: pii_detected,        action: block}
+      - {if: toxicity_high,       action: block}
+      - {if: uncertain_grounding, action: review}
+      - {if: ungrounded,          action: review}
+
+  internal_copilot:
+    description: >
+      Employee-facing assistant. The reader is an expert who can sanity-check the
+      answer, so a bad response costs far less; blocking a good one costs real
+      productivity. Bands widen accordingly — the same engine, a different appetite.
+    latency_budget_ms: 1500
+    weights: {performance: 0.9, responsibility: 1.0}
+    costs:
+      serve_bad: 120      # expert reader can sanity-check, so harm is bounded
+      block_good: 200     # a blocked answer costs real employee productivity
+      review: 15
+      caveat: 6
+      resid_edit: 0.35
+      resid_review: 0.05
+    hard_rules:
+      - {if: pii_detected,  action: review}
+      - {if: toxicity_high, action: review}
+
+  regulated_decision:
+    description: >
+      Decision-support inside a regulated workflow. A wrong answer is an
+      operational-risk event with a supervisory tail; withholding one is a minor
+      delay. The cost ratio is extreme, so the derived bands are the strictest.
+    latency_budget_ms: 3000
+    weights: {performance: 1.0, responsibility: 1.0}
+    costs:
+      serve_bad: 5000     # operational-risk event with a supervisory tail
+      block_good: 150
+      review: 60          # qualified reviewer, not a generalist
+      caveat: 20
+      resid_edit: 0.50    # a caveat barely helps when the output feeds a decision
+      resid_review: 0.03
+    hard_rules:
+      - {if: pii_detected,        action: block}
+      - {if: toxicity_high,       action: block}
+      - {if: uncertain_grounding, action: review}
+      - {if: ungrounded,          action: review}
+      - {if: inconsistent,        action: review}

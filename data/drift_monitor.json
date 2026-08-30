@@ -1,0 +1,146 @@
+[
+  {
+    "week": 1,
+    "psi": 0.0287,
+    "ks_d": 0.08,
+    "ks_p": 0.41127,
+    "block_rate": 0.3933333333333333,
+    "review_rate": 0.38666666666666666,
+    "verdict": "stable"
+  },
+  {
+    "week": 2,
+    "psi": 0.0268,
+    "ks_d": 0.0433,
+    "ks_p": 0.97515,
+    "block_rate": 0.43333333333333335,
+    "review_rate": 0.38,
+    "verdict": "stable"
+  },
+  {
+    "week": 3,
+    "psi": 0.0222,
+    "ks_d": 0.0733,
+    "ks_p": 0.52336,
+    "block_rate": 0.3933333333333333,
+    "review_rate": 0.3333333333333333,
+    "verdict": "stable"
+  },
+  {
+    "week": 4,
+    "psi": 0.0255,
+    "ks_d": 0.0567,
+    "ks_p": 0.82501,
+    "block_rate": 0.35333333333333333,
+    "review_rate": 0.37333333333333335,
+    "verdict": "stable"
+  },
+  {
+    "week": 5,
+    "psi": 0.0709,
+    "ks_d": 0.0733,
+    "ks_p": 0.52336,
+    "block_rate": 0.34,
+    "review_rate": 0.4666666666666667,
+    "verdict": "stable"
+  },
+  {
+    "week": 6,
+    "psi": 0.0046,
+    "ks_d": 0.035,
+    "ks_p": 0.99822,
+    "block_rate": 0.4266666666666667,
+    "review_rate": 0.37333333333333335,
+    "verdict": "stable"
+  },
+  {
+    "week": 7,
+    "psi": 0.025,
+    "ks_d": 0.0683,
+    "ks_p": 0.61466,
+    "block_rate": 0.3466666666666667,
+    "review_rate": 0.4,
+    "verdict": "stable"
+  },
+  {
+    "week": 8,
+    "psi": 0.0244,
+    "ks_d": 0.035,
+    "ks_p": 0.99822,
+    "block_rate": 0.36,
+    "review_rate": 0.41333333333333333,
+    "verdict": "stable"
+  },
+  {
+    "week": 9,
+    "psi": 2.8532,
+    "ks_d": 0.265,
+    "ks_p": 0.0,
+    "block_rate": 0.44,
+    "review_rate": 0.41333333333333333,
+    "verdict": "MATERIAL SHIFT"
+  },
+  {
+    "week": 10,
+    "psi": 0.4559,
+    "ks_d": 0.2517,
+    "ks_p": 0.0,
+    "block_rate": 0.5266666666666666,
+    "review_rate": 0.41333333333333333,
+    "verdict": "MATERIAL SHIFT"
+  },
+  {
+    "week": 11,
+    "psi": 2.1944,
+    "ks_d": 0.215,
+    "ks_p": 2e-05,
+    "block_rate": 0.48,
+    "review_rate": 0.41333333333333333,
+    "verdict": "MATERIAL SHIFT"
+  },
+  {
+    "week": 12,
+    "psi": 5.5158,
+    "ks_d": 0.3983,
+    "ks_p": 0.0,
+    "block_rate": 0.5066666666666667,
+    "review_rate": 0.4666666666666667,
+    "verdict": "MATERIAL SHIFT"
+  },
+  {
+    "week": 13,
+    "psi": 3.9233,
+    "ks_d": 0.4383,
+    "ks_p": 0.0,
+    "block_rate": 0.48,
+    "review_rate": 0.44666666666666666,
+    "verdict": "MATERIAL SHIFT"
+  },
+  {
+    "week": 14,
+    "psi": 4.4333,
+    "ks_d": 0.4383,
+    "ks_p": 0.0,
+    "block_rate": 0.4,
+    "review_rate": 0.5666666666666667,
+    "verdict": "MATERIAL SHIFT"
+  },
+  {
+    "week": 15,
+    "psi": 3.8653,
+    "ks_d": 0.4383,
+    "ks_p": 0.0,
+    "block_rate": 0.49333333333333335,
+    "review_rate": 0.47333333333333333,
+    "verdict": "MATERIAL SHIFT"
+  },
+  {
+    "week": 16,
+    "psi": 4.1897,
+    "ks_d": 0.4383,
+    "ks_p": 0.0,
+    "block_rate": 0.5066666666666667,
+    "review_rate": 0.46,
+    "verdict": "MATERIAL SHIFT"
+  }
+]

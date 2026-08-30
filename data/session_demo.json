@@ -1,0 +1,74 @@
+[
+  {
+    "turn": 1,
+    "p_harm": 0.0045,
+    "cumulative": 0.0045,
+    "ewma": 0.0045,
+    "session_action": "continue",
+    "reason": null,
+    "turn_action": "edit"
+  },
+  {
+    "turn": 2,
+    "p_harm": 0.0239,
+    "cumulative": 0.0283,
+    "ewma": 0.0123,
+    "session_action": "continue",
+    "reason": null,
+    "turn_action": "review"
+  },
+  {
+    "turn": 3,
+    "p_harm": 0.0239,
+    "cumulative": 0.0514,
+    "ewma": 0.0169,
+    "session_action": "continue",
+    "reason": null,
+    "turn_action": "review"
+  },
+  {
+    "turn": 4,
+    "p_harm": 0.0239,
+    "cumulative": 0.0741,
+    "ewma": 0.0197,
+    "session_action": "continue",
+    "reason": null,
+    "turn_action": "review"
+  },
+  {
+    "turn": 5,
+    "p_harm": 0.0239,
+    "cumulative": 0.0961,
+    "ewma": 0.0213,
+    "session_action": "warn",
+    "reason": "cumulative exposure 0.096 approaching limit 0.15",
+    "turn_action": "review"
+  },
+  {
+    "turn": 6,
+    "p_harm": 0.0239,
+    "cumulative": 0.1285,
+    "ewma": 0.0271,
+    "session_action": "warn",
+    "reason": "cumulative exposure 0.128 approaching limit 0.15",
+    "turn_action": "review"
+  },
+  {
+    "turn": 7,
+    "p_harm": 0.0239,
+    "cumulative": 0.1597,
+    "ewma": 0.0306,
+    "session_action": "halt_session",
+    "reason": "cumulative exposure 0.160 >= 0.15 AND risk still rising (EWMA 0.031 >= 0.025)",
+    "turn_action": "review"
+  },
+  {
+    "turn": 8,
+    "p_harm": 0.0239,
+    "cumulative": 0.1897,
+    "ewma": 0.0327,
+    "session_action": "halt_session",
+    "reason": "cumulative exposure 0.190 >= 0.15 AND risk still rising (EWMA 0.033 >= 0.025)",
+    "turn_action": "review"
+  }
+]
