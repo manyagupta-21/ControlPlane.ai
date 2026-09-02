@@ -5,11 +5,19 @@ A single YAML file (config/policies.yaml) defines, PER USE-CASE:
     (or, for legacy configs, hard-coded `thresholds:`)
   * hard_rules on detector flags -> minimum action, regardless of score
 
+It also defines TWO further, independent axes that COMPOSE with use_case
+rather than duplicating it, each scoped by `applies_to`:
+  * jurisdictions: -> geography-specific obligations (EU AI Act, India DPDP, ...)
+  * sectors:       -> industry-specific obligations (healthcare, finance, ...)
+
 This is what lets one engine behave differently for a customer-facing chatbot
-(low risk appetite) vs an internal copilot (higher tolerance) vs a regulated
-decision tool (strictest), without changing code. Risk appetite is expressed as
-what the four outcomes cost the business; the cut-points follow from that.
-Every fired rule is recorded, giving a per-decision audit trail.
+vs. an internal copilot vs. a regulated decision tool (use_case), AND
+differently again by regulatory regime (jurisdiction), AND differently again
+by industry (sector) -- without duplicating use cases per country or per
+vertical. Risk appetite is expressed as what the four outcomes cost the
+business; the cut-points follow from that. Every fired rule is recorded,
+tagged with which axis fired it, giving a per-decision audit trail across all
+three dimensions.
 """
 from __future__ import annotations
 import yaml
@@ -24,6 +32,8 @@ class PolicyEngine:
         with open(config_path, "r", encoding="utf-8") as f:
             self.cfg = yaml.safe_load(f)
         self.use_cases = self.cfg["use_cases"]
+        self.jurisdictions = self.cfg.get("jurisdictions", {})
+        self.sectors = self.cfg.get("sectors", {})
         # Derive thresholds once, at load time, for every use-case that ships a
         # cost model. Legacy use-cases keep their hard-coded thresholds.
         self.loss_models, self.thresholds = {}, {}
@@ -43,8 +53,21 @@ class PolicyEngine:
             return "edit"
         return "allow"
 
+    def _scoped_rules(self, axis_cfg: dict, axis_value: str, use_case: str) -> list[dict]:
+        """Shared lookup for both jurisdictions: and sectors: -- an axis
+        entry only contributes rules if it's configured AND scoped to this
+        use_case via applies_to (or has no applies_to, i.e. applies to all)."""
+        entry = axis_cfg.get(axis_value)
+        if not entry:
+            return []
+        applies_to = entry.get("applies_to")
+        if applies_to is not None and use_case not in applies_to:
+            return []
+        return entry.get("hard_rules", [])
+
     def decide(self, interaction_id: str, use_case: str,
-               results: list[DetectorResult], total_latency_ms: float = 0.0) -> Decision:
+               results: list[DetectorResult], jurisdiction: str = "US",
+               sector: str = "general", total_latency_ms: float = 0.0) -> Decision:
         if use_case not in self.use_cases:
             use_case = self.cfg.get("default_use_case", "internal_copilot")
         uc = self.use_cases[use_case]
@@ -103,14 +126,27 @@ class PolicyEngine:
         for r in results:
             flags.update({k: v for k, v in r.flags.items()})
 
-        for rule in uc.get("hard_rules", []):
-            cond = rule["if"]
-            if flags.get(cond):
-                new_action = escalate(action, rule["action"])
-                if new_action != action:
-                    reasons.append(f"rule '{cond}' -> escalate to '{rule['action']}'")
-                    action = new_action
-                fired.append(cond)
+        def apply_rules(rules: list[dict], tag: str):
+            nonlocal action
+            for rule in rules:
+                cond = rule["if"]
+                if flags.get(cond):
+                    new_action = escalate(action, rule["action"])
+                    if new_action != action:
+                        reasons.append(f"[{tag}] rule '{cond}' -> escalate to '{rule['action']}'")
+                        action = new_action
+                    fired.append(f"{tag}:{cond}")
+
+        # --- axis 1: use_case hard_rules -----------------------------------
+        apply_rules(uc.get("hard_rules", []), f"use_case:{use_case}")
+
+        # --- axis 2: jurisdiction hard_rules (composes with axis 1) --------
+        apply_rules(self._scoped_rules(self.jurisdictions, jurisdiction, use_case),
+                    f"jurisdiction:{jurisdiction}")
+
+        # --- axis 3: sector hard_rules (composes with axes 1 and 2) --------
+        apply_rules(self._scoped_rules(self.sectors, sector, use_case),
+                    f"sector:{sector}")
 
         return Decision(
             interaction_id=interaction_id,

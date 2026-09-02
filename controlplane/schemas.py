@@ -28,6 +28,9 @@ class Interaction:
     samples: list[str] = field(default_factory=list)  # alt generations for self-consistency
     model_used: str = "large"     # which model produced it (for cost/routing signal)
     regenerations: int = 0        # how many times it was re-generated (rework signal)
+    jurisdiction: str = "US"      # EU | IN | US | ... -> composes with use_case in the policy layer
+    sector: str = "general"       # healthcare | finance | general | ... -> composes with use_case + jurisdiction
+
     # ---- ground-truth labels (used ONLY by the evaluation harness, never by detectors) ----
     label_hallucination: Optional[bool] = None
     label_pii: Optional[bool] = None

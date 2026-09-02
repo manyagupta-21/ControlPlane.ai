@@ -28,6 +28,7 @@ app = FastAPI(title="ControlPlane.ai", version="0.2",
               description="Real-time AI governance gateway")
 
 cp = ControlPlane("config/policies.yaml", audit_path="data/audit_log.jsonl")
+cp.detectors[0].grounding.warm_up()
 llm = get_provider()
 
 SAFE_MESSAGE = ("[This response was withheld by ControlPlane because it failed a "
@@ -37,6 +38,8 @@ SAFE_MESSAGE = ("[This response was withheld by ControlPlane because it failed a
 class GuardRequest(BaseModel):
     prompt: str
     use_case: str = "customer_facing"      # customer_facing | internal_copilot | regulated_decision
+    jurisdiction: str = "US"               # EU | IN | US | ... -> composes with use_case
+    sector: str = "general"                # healthcare | finance | general | ... -> composes with use_case + jurisdiction
     context: Optional[str] = ""            # retrieved source docs, if any
     self_consistency: int = 1              # >1 = sample N times for consistency check
 
@@ -62,6 +65,23 @@ def health():
 async def guarded_completion(req: GuardRequest):
     t0 = time.perf_counter()
 
+    # 0) INPUT-SIDE GATE -- check the prompt before spending a generation
+    # call on it. Everything else in this system governs the model's OUTPUT;
+    # this is the one place that looks at what the user asked.
+    gate = cp.check_input(req.prompt)
+    if gate["action"] == "block":
+        return GuardResponse(
+            action="block",
+            served_response=SAFE_MESSAGE,
+            raw_response="",
+            overall_risk=gate["risk"],
+            risk_scores={"input_gate": gate["risk"]},
+            reasons=[f"blocked at input gate before generation: {gate['flags']}"],
+            fired_rules=["input_gate:pii_or_toxicity"],
+            provider=llm.name,
+            latency_ms=round((time.perf_counter() - t0) * 1000, 1),
+        )
+
     # 1) generate with the real (or mock) LLM
     n = max(1, req.self_consistency)
     samples = llm.generate(req.prompt, req.context, n=n)
@@ -69,6 +89,7 @@ async def guarded_completion(req: GuardRequest):
 
     # 2) govern it inline
     x = Interaction(id=f"live-{int(t0*1000)}", use_case=req.use_case,
+                    jurisdiction=req.jurisdiction, sector=req.sector,
                     query=req.prompt, response=raw, context=req.context or "",
                     samples=samples, model_used="large")
     decision = await cp.aprocess(x, log=True)

@@ -11,6 +11,7 @@ from .schemas import Interaction, Decision
 from .detectors import default_detectors
 from .policy import PolicyEngine
 from .audit import AuditLog
+from .input_gate import InputGate
 
 
 class ControlPlane:
@@ -19,6 +20,12 @@ class ControlPlane:
         self.detectors = detectors or default_detectors()
         self.policy = PolicyEngine(policy_path)
         self.audit = AuditLog(audit_path)
+        self.input_gate = InputGate()
+
+    def check_input(self, prompt: str) -> dict:
+        """Pre-generation gate. Call this BEFORE the LLM call; if it returns
+        action='block', skip generation entirely."""
+        return self.input_gate.check(prompt)
 
     async def _run_all(self, x: Interaction):
         # each detector runs in a thread so they truly overlap
@@ -41,7 +48,9 @@ class ControlPlane:
         # inline latency = the slowest INLINE detector (what the user waits on)
         inline = [r.latency_ms for r in results if r.speed == "inline"]
         inline_ms = max(inline) if inline else 0.0
-        decision = self.policy.decide(x.id, x.use_case, results, total_latency_ms=wall_ms)
+        decision = self.policy.decide(x.id, x.use_case, results,
+                                      jurisdiction=x.jurisdiction, sector=x.sector,
+                                      total_latency_ms=wall_ms)
         decision.reasons.append(
             f"inline_latency_ms={round(inline_ms,2)} (user-facing), "
             f"wall_ms={round(wall_ms,2)} (all checks, parallel)")

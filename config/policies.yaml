@@ -79,3 +79,74 @@ use_cases:
       - {if: uncertain_grounding, action: review}
       - {if: ungrounded,          action: review}
       - {if: inconsistent,        action: review}
+
+# Geography is a SECOND, independent axis that composes with use_case rather
+# than duplicating it. A jurisdiction's hard_rules escalate on top of whatever
+# the use_case already decided, same mechanism, same audit trail. `applies_to`
+# scopes a rule to the use cases it's actually meant for -- e.g. AI Act
+# high-risk obligations don't apply to every internal tool everywhere.
+jurisdictions:
+
+  EU:
+    description: >
+      EU AI Act. High-risk AI systems (customer-facing decisions, regulated
+      decision support) require human oversight and cannot rely on an
+      uncertain automated judgement alone.
+    applies_to: [customer_facing, regulated_decision]
+    hard_rules:
+      - {if: uncertain_grounding, action: review}   # human-in-the-loop obligation
+      - {if: pii_detected,        action: block}
+      - {if: toxicity_any,        action: review}   # broader monitoring than either use case asks for alone
+
+  IN:
+    description: >
+      India DPDP Act. Personal data disclosure is treated strictly regardless
+      of use case -- a single leaked entity is already a reportable event, and
+      a bulk disclosure is treated as its own incident.
+    applies_to: [customer_facing, internal_copilot, regulated_decision]
+    hard_rules:
+      - {if: pii_detected,        action: block}
+      - {if: pii_bulk_disclosure, action: block}
+
+  US:
+    description: >
+      Baseline for this prototype -- no additional jurisdiction-specific
+      obligations layered on beyond what each use_case already encodes.
+    applies_to: [customer_facing, internal_copilot, regulated_decision]
+    hard_rules: []
+
+# Industry is a THIRD, independent axis, same mechanism as jurisdictions:
+# hard_rules that escalate on top of whatever use_case + jurisdiction already
+# decided, scoped by `applies_to`. A healthcare decision-support tool and a
+# finance one share the same engine and differ only in which sector rules fire.
+sectors:
+
+  healthcare:
+    description: >
+      Clinical/health-adjacent deployments. A hallucinated detail about a
+      person's health is simultaneously a hallucination AND a privacy/safety
+      concern -- the brief calls this overlap out explicitly -- so an
+      ungrounded claim gets pulled to review even where the use case alone
+      wouldn't ask for one, and any detected PII (patient data) is a hard stop.
+    applies_to: [customer_facing, regulated_decision]
+    hard_rules:
+      - {if: pii_detected,   action: block}
+      - {if: ungrounded,     action: review}
+
+  finance:
+    description: >
+      Financial decision-support or customer-facing advice. An ungrounded
+      claim feeding a financial decision carries the same operational-risk
+      tail regulated_decision already prices in -- sector rules make that
+      explicit rather than relying on the use case to have priced it right.
+    applies_to: [customer_facing, regulated_decision]
+    hard_rules:
+      - {if: pii_detected,   action: block}
+      - {if: ungrounded,     action: review}
+
+  general:
+    description: >
+      No sector-specific obligations beyond what use_case and jurisdiction
+      already encode.
+    applies_to: [customer_facing, internal_copilot, regulated_decision]
+    hard_rules: []

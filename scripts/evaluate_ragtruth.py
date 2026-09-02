@@ -53,9 +53,12 @@ def main():
           f"'{backend.name}' grounding backend...")
 
     y, risk = [], []
+    n_timeout = 0
     t0 = time.perf_counter()
     for i, r in enumerate(rows):
-        rk, _ = backend.score(r["response"], r["context"])
+        rk, d = backend.score(r["response"], r["context"])
+        if d.get("nli_timeout"):
+            n_timeout += 1
         risk.append(rk); y.append(int(r["label_hallucination"]))
         if (i + 1) % 200 == 0:
             print(f"  {i+1}/{len(rows)}")
@@ -65,6 +68,8 @@ def main():
     base = y.mean()
     print(f"\nBase rate (hallucinated): {base:.1%}   |   scored in {dt:.1f}s "
           f"({1000*dt/len(rows):.1f} ms/response)")
+    if n_timeout:
+        print(f"NOTE: {n_timeout}/{len(rows)} ({n_timeout/len(rows):.1%}) fell back to TF-IDF on timeout")
 
     # AUROC + AUPRC (threshold-free)
     from sklearn.metrics import roc_auc_score, average_precision_score, roc_curve
