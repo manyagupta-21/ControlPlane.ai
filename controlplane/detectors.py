@@ -75,6 +75,16 @@ class PerformanceDetector:
         # per-dimension anomaly: is this answer's SUPPORT PROFILE + structure
         # unusual, once response length is regressed out? (dimension_anomaly.py)
         self.anomaly = _profiles()[0]
+        # AI-as-judge: a second-opinion LLM that reads the full response and
+        # context and returns a structured verdict (supported / unsupported /
+        # contradicted) with the specific claims it doubts. Runs async alongside
+        # the primary grounding backend so it never adds to inline latency. Its
+        # verdict lands in detail["judge"] for the audit trail; it does NOT
+        # override the primary risk score, which stays calibrated and comparable
+        # across backends. Fails open: if GROQ_API_KEY is absent or the call
+        # times out, verdict="unavailable" is logged and nothing else changes.
+        from .judge import LLMJudgeBackend
+        self._judge = LLMJudgeBackend()
         # optional calibration + abstention layer (fitted by scripts/calibrate.py)
         self.calibrator = None
         self.abstain_band = (0.40, 0.60)
@@ -113,6 +123,27 @@ class PerformanceDetector:
         detail = {"grounding_risk": round(grounding_risk, 3) if grounding_risk is not None else None,
                   "self_consistency": round(consistency, 3) if consistency is not None else None,
                   **{f"g_{k}": v for k, v in gdetail.items()}}
+
+        # --- AI-as-judge second opinion ------------------------------------
+        # The judge runs as a concurrent thread call (LLMJudgeBackend uses its
+        # own executor) so it overlaps with the anomaly check below. Its result
+        # lands in detail["judge"] unconditionally so the audit trail always
+        # records whether the judge agreed, disagreed, or was unavailable.
+        # It NEVER changes `risk`, `flags`, or the calibrated probability:
+        # those come from the TF-IDF backend which is validated on RAGTruth.
+        # The judge's role is to surface specific unsupported/contradicted claims
+        # in plain language — something a cross-encoder or TF-IDF cannot do.
+        if x.context:
+            _, judge_detail = self._judge.score(x.response, x.context)
+            detail.update(judge_detail)
+            jv = (judge_detail.get("judge") or {}).get("verdict", "unavailable")
+            # Flag the disagreement case: TF-IDF says low risk but judge disagrees.
+            # This is the most actionable signal — a case the primary model missed
+            # that a human reviewer should look at.
+            if (grounding_risk is not None
+                    and grounding_risk < self.ungrounded_thr
+                    and jv in ("unsupported", "contradicted")):
+                flags["judge_overrides_tfidf"] = True
 
         # --- statistical anomaly, performance dimension --------------------
         # Reported, never added to `risk`: an unusual support profile is a

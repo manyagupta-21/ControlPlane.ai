@@ -19,9 +19,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from controlplane import Interaction
 from controlplane.pipeline import ControlPlane
 from controlplane.policy import PolicyEngine
-from controlplane.decision_theory import harm_probability, adjust_prior
-from controlplane.scoring import combine
-from controlplane.detectors import default_detectors
+from controlplane.decision_theory import adjust_prior
 
 DATA, POLICY = "data/interactions.jsonl", "config/policies.yaml"
 # the static bands the prototype used before the cost model replaced them
@@ -39,19 +37,21 @@ def main():
     data = [Interaction(**json.loads(l)) for l in open(DATA, encoding="utf-8")]
     pe = PolicyEngine(POLICY)
     cp = ControlPlane(POLICY, audit_path="data/_backtest_audit.jsonl")
-    dets = default_detectors()
 
     rows = []
     for x in data:
         harmful = bool(x.label_hallucination or x.label_pii or x.label_toxic)
-        results = [d.run(x) for d in dets]
-        _, per_dim = combine(results, pe.use_cases[x.use_case].get("weights"))
-        cal = next((r.detail.get("calibrated_hallucination_prob")
-                    for r in results if r.name == "performance"), None)
-        p = harm_probability(per_dim, cal)
-        rows.append(dict(uc=x.use_case, harmful=harmful, p=p,
-                         controlplane=cp.process(x, log=False).action,
-                         legacy=band(LEGACY[x.use_case], p),
+        # ONE call to the full pipeline — gets both the action and p_harm from
+        # the same code path. The previous version ran detectors manually to get
+        # `p` and then called cp.process() again to get the action, meaning the
+        # two numbers came from different code paths: `p` bypassed OOD widening
+        # and hard rules, while `controlplane` action included them. The
+        # prevalence-sensitivity table then applied adjust_prior to the wrong `p`.
+        d = cp.process(x, log=False)
+        rows.append(dict(uc=x.use_case, harmful=harmful,
+                         p=d.p_harm,           # the widened p_decision the policy actually used
+                         controlplane=d.action,
+                         legacy=band(LEGACY[x.use_case], d.p_harm),
                          oracle="block" if harmful else "allow"))
 
     policies = {

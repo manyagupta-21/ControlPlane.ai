@@ -231,6 +231,8 @@ It includes:
 * Calibrated hallucination probability
 * Statistical anomaly detection
 
+**Pluggable grounding backends:** The performance/grounding component supports TF-IDF, semantic embedding, and NLI-based backends through a common interface. TF-IDF is the default lightweight backend used for the prototype evaluation, while the semantic embedding and NLI implementations provide alternative semantic and entailment-based scoring strategies.
+
 The performance probability is calibrated using held-out data rather than treating the raw detector score as a directly interpretable probability.
 
 ### 2. Responsibility
@@ -248,7 +250,7 @@ It includes:
 * Toxicity and bias signals
 * Statistical monitoring of PII and toxicity rates
 
-Optional integrations can provide stronger specialised detection where available.
+**Pluggable responsibility backends:** The responsibility layer includes local PII and toxicity/bias checks, with Presidio and Detoxify available as alternative specialised backends.
 
 ### 3. Cost
 
@@ -771,7 +773,8 @@ data/calibrator.json
 python scripts/evaluate_ragtruth.py
 ```
 
-This evaluates the performance/grounding component against the RAGTruth QA test set.
+```markdown
+The default command evaluates the TF-IDF grounding backend against the RAGTruth QA test set. Alternative grounding backends can also be selected through the same evaluation interface.
 
 ### Evaluate the full control layer
 

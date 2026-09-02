@@ -153,6 +153,78 @@ with right:
         for dim, val in d.risk_scores.items():
             st.progress(min(1.0, val), text=f"{dim}: {val:.2f}")
 
+        # --- AI-as-judge second opinion ------------------------------------
+        # The judge is the only component in the system that names specific
+        # claims and gives a plain-English reason. Show it prominently so a
+        # reviewer can see immediately what was wrong, not just that something
+        # scored 0.611.
+        perf_det = next((r["detail"] for r in d.detector_results
+                         if r["name"] == "performance"), {})
+        judge = perf_det.get("judge")
+        if judge and judge.get("verdict") not in (None, "api_key_missing"):
+            st.caption("AI-as-judge second opinion")
+            verdict = judge.get("verdict", "unavailable")
+            JUDGE_COLOR = {
+                "supported": "#1FA36B",
+                "unsupported": "#E39A1C",
+                "contradicted": "#D24545",
+            }
+            JUDGE_TINT = {
+                "supported": "#E8F8F1",
+                "unsupported": "#FDF3E3",
+                "contradicted": "#FBEAEA",
+            }
+            jcolor = JUDGE_COLOR.get(verdict, "#888")
+            jtint = JUDGE_TINT.get(verdict, "#F5F5F5")
+            latency = judge.get("judge_latency_ms", "")
+            latency_str = f" · {latency:.0f} ms" if latency else ""
+            # Build the inner HTML: verdict badge + reasoning + claim lists
+            inner = (f"<b>Verdict: {verdict.upper()}</b>"
+                     f"<span style='color:#888;font-size:12px'>{latency_str}</span>")
+            if judge.get("reasoning"):
+                inner += f"<br><span style='color:#555'>{judge['reasoning']}</span>"
+            if judge.get("unsupported_claims"):
+                claims = "; ".join(f'"{c}"' for c in judge["unsupported_claims"])
+                inner += f"<br><b>Unsupported claims:</b> {claims}"
+            if judge.get("contradicted_claims"):
+                claims = "; ".join(f'"{c}"' for c in judge["contradicted_claims"])
+                inner += f"<br><b>Contradicted claims:</b> {claims}"
+            confidence = judge.get("confidence")
+            if confidence is not None:
+                inner += f"<br><span style='color:#888;font-size:12px'>Judge confidence: {confidence}</span>"
+            # Show judge_overrides_tfidf prominently — it's the most actionable signal
+            if next((r["flags"] for r in d.detector_results
+                     if r["name"] == "performance"), {}).get("judge_overrides_tfidf"):
+                inner += ("<br><b style='color:#D24545'>⚠ Judge overrides TF-IDF: "
+                          "primary grounding said acceptable, judge disagrees — "
+                          "recommend human review</b>")
+            st.markdown(
+                f"<div style='padding:12px 16px;border-radius:8px;"
+                f"background:{jtint};border-left:4px solid {jcolor};"
+                f"font-size:14px;color:#333'>{inner}</div>",
+                unsafe_allow_html=True)
+        elif judge and judge.get("verdict") == "api_key_missing":
+            st.caption("AI-as-judge second opinion")
+            st.markdown(
+                "<div style='padding:10px 14px;border-radius:8px;background:#F0F0F0;"
+                "border-left:4px solid #888;font-size:14px;color:#555'>"
+                "🔑 <b>Judge not active.</b> Set <code>GROQ_API_KEY</code> and provide "
+                "a source context to enable the LLM grounding auditor. "
+                "Free key at <a href='https://console.groq.com'>console.groq.com</a>."
+                "</div>", unsafe_allow_html=True)
+        elif not perf_det.get("judge"):
+            # judge is None — either no context was provided (judge skips without
+            # context) or the judge hasn't run yet
+            if not context.strip():
+                st.caption("AI-as-judge second opinion")
+                st.markdown(
+                    "<div style='padding:10px 14px;border-radius:8px;background:#F0F0F0;"
+                    "border-left:4px solid #888;font-size:14px;color:#555'>"
+                    "ℹ️ <b>Judge requires source context.</b> Add text in the "
+                    "'Source context' box on the left — the judge checks whether "
+                    "specific claims in the response are supported by that context."
+                    "</div>", unsafe_allow_html=True)
+
         st.caption("Why")
         for reason in d.reasons:
             st.write("-", reason)

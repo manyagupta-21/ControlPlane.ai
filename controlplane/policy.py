@@ -153,6 +153,19 @@ class PolicyEngine:
         for r in results:
             flags.update({k: v for k, v in r.flags.items()})
 
+        # --- overlap detection -----------------------------------------------
+        # The Round 2 brief explicitly calls out: "a fabricated detail about a
+        # person can simultaneously be a hallucination AND a privacy concern."
+        # This is the one place in the system where both signals are visible at
+        # the same time, so it is the right place to name the joint incident.
+        # The flag rides in fired_rules so it appears in the audit trail and is
+        # available to monitoring -- a joint incident has a different escalation
+        # path (and in a real deployment, a different notification chain) from
+        # either condition alone.
+        if flags.get("pii_detected") and flags.get("ungrounded"):
+            flags["hallucination_pii_overlap"] = True
+            fired.append("overlap:hallucination_pii")
+
         # --- axes 1-3: use_case, then jurisdiction, then sector hard_rules --
         action = self._apply_three_axes(use_case, flags, jurisdiction, sector,
                                         action, reasons, fired)

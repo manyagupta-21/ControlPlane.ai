@@ -36,7 +36,7 @@ class MockProvider:
 
 class GroqProvider:
     name = "groq"
-    def __init__(self, model: str = "llama-3.3-70b-versatile"):
+    def __init__(self, model: str = "openai/gpt-oss-20b"):
         from groq import Groq  # pip install groq
         self.client = Groq(api_key=os.environ["GROQ_API_KEY"])
         self.model = model

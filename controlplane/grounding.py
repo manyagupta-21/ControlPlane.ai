@@ -225,6 +225,9 @@ class NliClaimBackend(TfidfClaimBackend):
 
 
 def get_backend(name="tfidf"):
+    from .judge import LLMJudgeBackend, TfidfPlusJudgeBackend
     return {"tfidf": TfidfClaimBackend,
             "embedding": EmbeddingClaimBackend,
-            "nli": NliClaimBackend}[name]()
+            "nli": NliClaimBackend,
+            "judge": LLMJudgeBackend,
+            "tfidf+judge": TfidfPlusJudgeBackend}[name]()
