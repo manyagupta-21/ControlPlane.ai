@@ -26,13 +26,15 @@ import pandas as pd
 import streamlit as st
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+import altair as alt
 from controlplane.policy import PolicyEngine
+from controlplane.feedback import rule_level_overrides, rolling_trust, recommend
 
 LOG, POLICY = "data/audit_log.jsonl", "config/policies.yaml"
 ACTIONS = ["allow", "edit", "review", "block"]
 
-st.set_page_config(page_title="ControlPlane · Monitoring", layout="wide")
-st.title("ControlPlane — monitoring")
+st.set_page_config(page_title="ControlPlane: Monitoring", layout="wide")
+st.title("ControlPlane: monitoring")
 st.caption("Every number below is computed from the append-only audit trail at "
            f"`{LOG}`. Nothing here is stored separately from the decisions themselves.")
 
@@ -116,7 +118,7 @@ with right:
 st.divider()
 
 # ---------------------------------------------------------------- trust
-st.subheader("Is it trusted? — override analysis")
+st.subheader("Is it trusted?: override analysis")
 if ovr.empty:
     st.info("No overrides logged yet.")
 else:
@@ -152,6 +154,53 @@ else:
                "= the policy is ambiguous and needs clarifying before it needs retraining).")
     by_rev = (ovr.groupby("reviewer").size() / len(ovr)).sort_values(ascending=False)
     st.bar_chart(by_rev)
+
+    # ------------------------------------------------ rule-level attribution
+    st.markdown("**Which specific rule is losing trust?**")
+    st.caption(
+        "The table above averages every 'review' (or 'block'...) together, but one "
+        "action can be produced by several different rules -- a use_case rule, a "
+        "jurisdiction rule, a sector rule -- each with its own override rate. This "
+        "attributes every override back to the exact fired rule(s) behind the "
+        "decision it overturned, so the fix below points at one line in "
+        "`config/policies.yaml`, not a guess.")
+    rule_tbl = rule_level_overrides(dec, ovr)
+    if rule_tbl.empty:
+        st.info("No fired_rules recorded on any decision in this log.")
+    else:
+        st.dataframe(
+            rule_tbl.style.format({"override_rate": "{:.1%}"})
+            .background_gradient(subset=["override_rate"], cmap="Reds"),
+            use_container_width=True, hide_index=True)
+
+        recs = recommend(rule_tbl)
+        if recs:
+            for r in recs:
+                st.warning(r)
+        else:
+            st.success("No single rule is overturned often enough (>=30%, "
+                       "n>=5) to act on yet.")
+
+        worst_rule = rule_tbl.iloc[0]["fired_rule"]
+        trend = rolling_trust(dec, ovr, worst_rule)
+        if len(trend) >= 3:
+            st.caption(f"Rolling override rate for the worst offender, "
+                      f"`{worst_rule}`, over the order decisions arrived "
+                      f"(not calendar time) -- is trust in this rule stable, "
+                      f"improving, or eroding?")
+            x_min, x_max = int(trend["decision_seq"].min()), int(trend["decision_seq"].max())
+            chart = (
+                alt.Chart(trend)
+                .mark_line()
+                .encode(
+                    x=alt.X("decision_seq:Q", title="decision #",
+                           scale=alt.Scale(domain=[x_min, x_max])),
+                    y=alt.Y("rolling_override_rate:Q", title="rolling override rate",
+                           scale=alt.Scale(domain=[0, 1])),
+                )
+                .properties(height=250)
+            )
+            st.altair_chart(chart, use_container_width=True)
 
 st.divider()
 
