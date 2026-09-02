@@ -60,10 +60,10 @@ ControlPlane.ai treats AI guardrailing as a **decision problem rather than only 
 
 For each interaction, the system:
 
-1. Applies a **pre-generation input gate**.
+1. Applies a pre-generation input gate.
 2. Generates the response when the request is permitted.
 3. Evaluates the response across three control dimensions.
-4. Applies an **AI-as-judge second opinion** alongside the primary grounding score.
+4. Applies an AI-as-judge second opinion alongside the primary grounding score.
 5. Calibrates the performance-related probability estimate.
 6. Detects statistical behaviour outside validated operating profiles.
 7. Applies use-case, jurisdiction, and sector policies.
@@ -315,7 +315,7 @@ Cost monitoring evaluates response length conditional on query length (log-token
 
 The anomaly profiles were fitted using 3,470 clean QA-train responses against 740 held-out clean QA responses at a nominal significance level of 1%.
 
-The held-out clean-data flag rate was **0.81%** — close to the nominal level, confirming the profile is not over-flagging clean observations.
+The held-out clean-data flag rate was **0.81%**: close to the nominal level, confirming the profile is not over-flagging clean observations.
 
 ---
 
@@ -339,13 +339,13 @@ The judge can do something the TF-IDF and NLI backends cannot: it names the **sp
 
 ### Architecture
 
-The judge runs asynchronously inside the performance detector — it never adds to the inline latency the user waits for. Its verdict lands in `DetectorResult.detail["judge"]` and is recorded in every audit trail entry.
+The judge runs asynchronously inside the performance detector, it never adds to the inline latency the user waits for. Its verdict lands in `DetectorResult.detail["judge"]` and is recorded in every audit trail entry.
 
 The judge does **not** replace the calibrated TF-IDF risk used for the decision. The TF-IDF score is validated on RAGTruth and sits on a calibrated probability scale. The judge's verdict is a qualitative second opinion, not a calibrated probability, and mixing the two would corrupt the expected-loss arithmetic. The correct channel is the audit trail.
 
 ### `judge_overrides_tfidf` flag
 
-When TF-IDF scores a response as acceptable but the judge returns `unsupported` or `contradicted`, a `judge_overrides_tfidf` flag is set on the decision. These are the highest-priority cases for human review — the primary model missed something the judge caught.
+When TF-IDF scores a response as acceptable but the judge returns `unsupported` or `contradicted`, a `judge_overrides_tfidf` flag is set on the decision. These are the highest-priority cases for human review which the primary model missed something the judge caught.
 
 In the evaluation demo, TF-IDF scored a fabricated South region revenue figure at 0.611 (below the block threshold). The judge identified it as unsupported with 0.99 confidence and named the exact claim. `judge_overrides_tfidf=True` was set. Judge latency: approximately 660ms on Groq's free tier.
 
@@ -358,7 +358,7 @@ picking one AI's judgment over another's.
 
 ### Overlap detection
 
-When a response is simultaneously hallucinated and contains PII — a case the Round 2 brief explicitly calls out — ControlPlane sets a `hallucination_pii_overlap` flag and records `overlap:hallucination_pii` in the fired rules. This names the joint incident in the audit trail so it can be routed to a different escalation path from either condition alone.
+When a response is simultaneously hallucinated and contains PII, ControlPlane sets a `hallucination_pii_overlap` flag and records `overlap:hallucination_pii` in the fired rules. This names the joint incident in the audit trail so it can be routed to a different escalation path from either condition alone.
 
 ### Fail-open design
 
@@ -369,7 +369,7 @@ If `GROQ_API_KEY` is absent, the `groq` package is not installed, or the API cal
 `openai/gpt-oss-20b` is a chain-of-thought model: it spends part of its token
 budget on hidden internal reasoning before writing the final answer. On some
 inputs it can spend the *entire* budget reasoning and return empty content
-with `finish_reason: "length"` — not an error, just nothing written. This is
+with `finish_reason: "length"`, not an error, just nothing written. This is
 a documented Groq/gpt-oss behaviour, not a bug in this codebase.
 
 The judge handles it explicitly: `reasoning_effort="low"` reduces how much
@@ -487,13 +487,13 @@ Verdict = MATERIAL SHIFT
 
 ### Feedback loop
 
-The feedback module (`controlplane/feedback.py`) attributes each human override back to the specific fired rule that produced the decision being overridden — not just the action.
+The feedback module (`controlplane/feedback.py`) attributes each human override back to the specific fired rule that produced the decision being overridden and not just the action.
 
 This is the distinction that matters operationally: two `review` decisions can be driven by completely different rules. A rule-level override rate tells you exactly which entry in `config/policies.yaml` is losing the desk's trust. The recommendation output names the axis (use_case / jurisdiction / sector) and the specific condition, pointing directly to the config edit required.
 
 ### Audit trail
 
-Every decision — including input gate decisions — is recorded with: input and response, risk evidence, policy context, fired rules (tagged by axis), selected action, reasons, and session information.
+Every decision, including input gate decisions, is recorded with: input and response, risk evidence, policy context, fired rules (tagged by axis), selected action, reasons, and session information.
 
 ---
 
@@ -527,7 +527,7 @@ At the Youden-optimal threshold of 0.692:
 | Brier score | 0.3757 |     0.1518 |
 | ECE         | 0.4830 |     0.1248 |
 
-A reject-option experiment showed accuracy rising from 82% (full coverage) to 90% (60% automatic coverage) — supporting use of human escalation for lower-confidence cases.
+A reject-option experiment showed accuracy rising from 82% (full coverage) to 90% (60% automatic coverage), supporting use of human escalation for lower-confidence cases.
 
 ### Loss backtest
 
