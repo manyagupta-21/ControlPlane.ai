@@ -23,7 +23,7 @@ ControlPlane.ai is designed as a general-purpose AI control layer rather than a 
 * [Running the evaluation suite](#running-the-evaluation-suite)
 * [Configuration](#configuration)
 * [Troubleshooting](#troubleshooting)
-* [Team](#team)
+
 
 ---
 
@@ -103,12 +103,12 @@ The system is designed so that the business specifies the costs of different out
                          |   RESPONSE CONTROL      |
                          |                         |
                          | Performance             |
-                         | Responsibility           |
+                         | Responsibility          |
                          | Cost                    |
                          |                         |
                          | Statistical anomaly     |
-                         | detection within each  |
-                         | dimension              |
+                         | detection within each   |
+                         | dimension               |
                          +------------+------------+
                                       |
                                       v
