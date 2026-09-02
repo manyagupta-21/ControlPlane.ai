@@ -12,6 +12,7 @@ ControlPlane.ai is designed as a general-purpose AI control layer rather than a 
 * [Statistical decision framework](#statistical-decision-framework)
 * [Risk dimensions](#risk-dimensions)
 * [Statistical anomaly detection](#statistical-anomaly-detection)
+* [AI-as-judge second opinion](#ai-as-judge-second-opinion)
 * [Policy and governance](#policy-and-governance)
 * [Multi-turn and session control](#multi-turn-and-session-control)
 * [Monitoring and feedback](#monitoring-and-feedback)
@@ -23,7 +24,6 @@ ControlPlane.ai is designed as a general-purpose AI control layer rather than a 
 * [Running the evaluation suite](#running-the-evaluation-suite)
 * [Configuration](#configuration)
 * [Troubleshooting](#troubleshooting)
-
 
 ---
 
@@ -63,12 +63,13 @@ For each interaction, the system:
 1. Applies a **pre-generation input gate**.
 2. Generates the response when the request is permitted.
 3. Evaluates the response across three control dimensions.
-4. Calibrates the performance-related probability estimate.
-5. Detects statistical behaviour outside validated operating profiles.
-6. Applies use-case, jurisdiction, and sector policies.
-7. Minimises expected loss to select an action.
-8. Records the decision in an audit trail.
-9. Monitors cumulative session exposure and population-level drift.
+4. Applies an **AI-as-judge second opinion** alongside the primary grounding score.
+5. Calibrates the performance-related probability estimate.
+6. Detects statistical behaviour outside validated operating profiles.
+7. Applies use-case, jurisdiction, and sector policies.
+8. Minimises expected loss to select an action.
+9. Records the decision in an audit trail.
+10. Monitors cumulative session exposure and population-level drift.
 
 The resulting action is one of:
 
@@ -103,12 +104,14 @@ The system is designed so that the business specifies the costs of different out
                          |   RESPONSE CONTROL      |
                          |                         |
                          | Performance             |
+                         |  - TF-IDF grounding     |
+                         |  - AI-as-judge (async)  |
+                         |  - Self-consistency     |
+                         |  - Calibration          |
+                         |  - Anomaly detection    |
+                         |                         |
                          | Responsibility          |
                          | Cost                    |
-                         |                         |
-                         | Statistical anomaly     |
-                         | detection within each   |
-                         | dimension               |
                          +------------+------------+
                                       |
                                       v
@@ -225,13 +228,11 @@ The performance control evaluates whether the response is supported by the avail
 
 It includes:
 
-* Context grounding
-* TF-IDF based support scoring
-* Self-consistency checks
+* Context grounding via TF-IDF claim-level faithfulness scoring (validated on RAGTruth)
+* AI-as-judge LLM second opinion (see dedicated section below)
+* Self-consistency checks across resampled generations
 * Calibrated hallucination probability
-* Statistical anomaly detection
-
-**Pluggable grounding backends:** The performance/grounding component supports TF-IDF, semantic embedding, and NLI-based backends through a common interface. TF-IDF is the default lightweight backend used for the prototype evaluation, while the semantic embedding and NLI implementations provide alternative semantic and entailment-based scoring strategies.
+* Statistical anomaly detection on response structure and support profile
 
 The performance probability is calibrated using held-out data rather than treating the raw detector score as a directly interpretable probability.
 
@@ -250,7 +251,7 @@ It includes:
 * Toxicity and bias signals
 * Statistical monitoring of PII and toxicity rates
 
-**Pluggable responsibility backends:** The responsibility layer includes local PII and toxicity/bias checks, with Presidio and Detoxify available as alternative specialised backends.
+Optional integrations can provide stronger specialised detection where available.
 
 ### 3. Cost
 
@@ -294,102 +295,153 @@ Policy decision
 
 This distinction is important because unusual behaviour can be legitimate.
 
-For example:
-
-* A correct response may be unusually long.
-* A legitimate query may have an unusual structure.
-* A rare user request may not represent harmful behaviour.
-* A new but valid operating condition may fall outside the historical profile.
-
 ControlPlane.ai therefore uses anomaly evidence to widen uncertainty around the decision rather than simply adding anomaly severity to the estimated harm probability.
 
 ### Performance anomaly model
 
-The performance profile uses response and support features such as:
-
-* Number of claims
-* Mean support
-* Minimum support
-* Support variability
-* Fraction unsupported
-* Support range
-* Log response length
-* Type-token ratio
-* Digit density
-* Sentence length
-* Repetition behaviour
+The performance profile uses response and support features including number of claims, mean and minimum support, support variability, fraction unsupported, log response length, type-token ratio, digit density, sentence length, and repetition behaviour.
 
 The profile combines response-length modelling with multivariate distance using the squared Mahalanobis statistic.
 
 ### Responsibility anomaly model
 
-Responsibility monitoring tracks population behaviour such as:
-
-* PII occurrence rates
-* Toxicity occurrence rates
-* Population-rate drift
+Responsibility monitoring tracks population behaviour: PII occurrence rates, toxicity occurrence rates, and population-rate drift via EWMA control charts.
 
 ### Cost anomaly model
 
-Cost monitoring evaluates:
-
-* Response length conditional on query length
-* Log-token residuals
-* Regeneration frequency
+Cost monitoring evaluates response length conditional on query length (log-token residuals) and regeneration frequency via Poisson tail probabilities.
 
 ### Held-out anomaly validation
 
-The anomaly profiles were fitted using:
+The anomaly profiles were fitted using 3,470 clean QA-train responses against 740 held-out clean QA responses at a nominal significance level of 1%.
 
-* **3,470 clean QA-train responses**
-* **740 held-out clean QA responses**
-* Nominal significance level: **1%**
+The held-out clean-data flag rate was **0.81%** — close to the nominal level, confirming the profile is not over-flagging clean observations.
 
-The held-out clean-data flag rate was:
+---
 
-**0.81%**
+## AI-as-judge second opinion
 
-A realised rate close to the nominal significance level provides a useful sanity check that the statistical profile is not excessively over-flagging clean observations.
+ControlPlane includes an LLM-based grounding auditor that runs alongside the primary TF-IDF faithfulness scorer as a second opinion.
+
+For each response with available context, the judge is given the full context and response and returns a structured JSON verdict:
+
+```json
+{
+  "verdict":            "supported | unsupported | contradicted",
+  "unsupported_claims": ["specific claim text"],
+  "contradicted_claims": ["specific claim text"],
+  "reasoning":          "one-line explanation",
+  "confidence":         0.99
+}
+```
+
+The judge can do something the TF-IDF and NLI backends cannot: it names the **specific claims** it doubts and gives a **plain-English reason**, making the audit trail inspectable rather than just a score.
+
+### Architecture
+
+The judge runs asynchronously inside the performance detector — it never adds to the inline latency the user waits for. Its verdict lands in `DetectorResult.detail["judge"]` and is recorded in every audit trail entry.
+
+The judge does **not** replace the calibrated TF-IDF risk used for the decision. The TF-IDF score is validated on RAGTruth and sits on a calibrated probability scale. The judge's verdict is a qualitative second opinion, not a calibrated probability, and mixing the two would corrupt the expected-loss arithmetic. The correct channel is the audit trail.
+
+### `judge_overrides_tfidf` flag
+
+When TF-IDF scores a response as acceptable but the judge returns `unsupported` or `contradicted`, a `judge_overrides_tfidf` flag is set on the decision. These are the highest-priority cases for human review — the primary model missed something the judge caught.
+
+In the evaluation demo, TF-IDF scored a fabricated South region revenue figure at 0.611 (below the block threshold). The judge identified it as unsupported with 0.99 confidence and named the exact claim. `judge_overrides_tfidf=True` was set. Judge latency: approximately 660ms on Groq's free tier.
+
+Note: `judge_overrides_tfidf` flags *disagreement*, not correctness. In our
+evaluation, the judge was sometimes stricter than TF-IDF (e.g., treating an
+inferred connection between two facts as unsupported when a human reader would
+accept it). This is expected and desirable: the flag exists so a human makes
+the final call on genuinely ambiguous cases, rather than the system silently
+picking one AI's judgment over another's.
+
+### Overlap detection
+
+When a response is simultaneously hallucinated and contains PII — a case the Round 2 brief explicitly calls out — ControlPlane sets a `hallucination_pii_overlap` flag and records `overlap:hallucination_pii` in the fired rules. This names the joint incident in the audit trail so it can be routed to a different escalation path from either condition alone.
+
+### Fail-open design
+
+If `GROQ_API_KEY` is absent, the `groq` package is not installed, or the API call exceeds the timeout, the judge logs `verdict: unavailable` and the pipeline continues with TF-IDF as the sole score. No decisions change.
+
+### A known reasoning-model failure mode
+
+`openai/gpt-oss-20b` is a chain-of-thought model: it spends part of its token
+budget on hidden internal reasoning before writing the final answer. On some
+inputs it can spend the *entire* budget reasoning and return empty content
+with `finish_reason: "length"` — not an error, just nothing written. This is
+a documented Groq/gpt-oss behaviour, not a bug in this codebase.
+
+The judge handles it explicitly: `reasoning_effort="low"` reduces how much
+budget the model spends reasoning, the token budget is set generously (1024,
+retried at 2048), and if the model still returns nothing, the verdict is
+logged as `reasoning_exhausted` rather than a generic failure — so the audit
+trail states plainly what happened.
+
+### Setup
+
+```bash
+pip install groq
+# Free key at https://console.groq.com (30 seconds to sign up)
+$env:GROQ_API_KEY = "your_key_here"   # PowerShell
+python scripts/test_judge.py
+```
+
+### Backend selection
+
+```bash
+CONTROLPLANE_GROUNDING=tfidf          # TF-IDF only (default, offline)
+CONTROLPLANE_GROUNDING=judge          # judge only
+CONTROLPLANE_GROUNDING=tfidf+judge    # TF-IDF primary + judge second opinion
+```
 
 ---
 
 ## Policy and governance
 
-Policy configuration is stored in:
-
-```text
-config/policies.yaml
-```
+Policy configuration is stored in `config/policies.yaml`.
 
 The policy layer separates business context from detector implementation.
 
-Policies can vary across:
+Policies can vary across use case, jurisdiction, sector, risk appetite, latency budget, action costs, and hard governance rules.
 
-* Use case
-* Jurisdiction
-* Sector
-* Risk appetite
-* Latency budget
-* Action costs
-* Hard governance rules
+### Three-axis composition
 
-The current prototype includes:
+The policy engine composes three independent axes:
 
-### Customer-facing
+```text
+use_case  x  jurisdiction  x  sector
+```
 
-Designed for lower tolerance for harmful responses and tighter response-time requirements.
+Each axis contributes hard rules that escalate the action independently. A healthcare deployment in the EU under a regulated decision use case fires all three axes simultaneously. Rules from each axis are tagged separately in the audit trail.
 
-### Internal copilot
+### Current use cases
 
-Allows a different trade-off because an expert user can review or correct outputs before downstream use.
+**Customer-facing** — lower tolerance for harmful responses, tighter response-time requirements.
 
-### Regulated decision
+**Internal copilot** — wider trade-off because an expert user can review or correct outputs before downstream use.
 
-Uses substantially higher costs for serving harmful responses, producing much more conservative decision behaviour.
+**Regulated decision** — substantially higher costs for serving harmful responses, producing the most conservative decision behaviour.
+
+### Jurisdictions
+
+**EU** — EU AI Act. Human-in-the-loop obligation for uncertain grounding in high-risk use cases.
+
+**IN** — India DPDP Act. PII disclosure is a hard stop across all use cases. Bulk PII disclosure is treated as a distinct incident.
+
+**US** — Baseline. No additional jurisdiction-specific obligations beyond each use case.
+
+### Sectors
+
+**Healthcare** — Hallucination and PII overlap is explicitly handled. An ungrounded claim in a clinical context triggers review even where the use case alone would not.
+
+**Finance** — Ungrounded claims feeding financial decisions carry the same operational-risk tail as the regulated decision use case.
+
+**General** — No sector-specific obligations beyond use case and jurisdiction.
 
 ### Derived decision bands
 
-Current decision-band analysis gives:
+Current decision-band analysis:
 
 | Use case           | Cost ratio |  Edit | Review | Block |
 | ------------------ | ---------: | ----: | -----: | ----: |
@@ -405,9 +457,7 @@ These values are derived from the configured loss structure rather than manually
 
 A response-level guardrail cannot capture all risks created by a sequence of individually acceptable responses.
 
-ControlPlane.ai therefore maintains session-level exposure.
-
-For a sequence of served responses with estimated harmful probabilities \(p_1,\ldots,p_n\), cumulative exposure is represented as:
+ControlPlane.ai therefore maintains session-level exposure:
 
 $$
 1-\prod_{i=1}^{n}(1-p_i)
@@ -425,18 +475,9 @@ ControlPlane.ai includes population-level monitoring in addition to response-lev
 
 ### Drift monitoring
 
-The monitoring layer compares a live or simulated reference window using:
+The monitoring layer compares a live or simulated reference window using Population Stability Index and two-sample Kolmogorov-Smirnov test.
 
-* Population Stability Index
-* Two-sample Kolmogorov-Smirnov test
-
-In the current simulated drift experiment:
-
-* Reference window: weeks 1 to 4
-* Retrieval degradation injected from week 9
-* First material distributional breach: **week 9**
-
-At week 9:
+In the current simulated drift experiment, retrieval degradation injected from week 9 produced:
 
 ```text
 PSI = 2.853
@@ -444,37 +485,23 @@ KS p-value < 0.0001
 Verdict = MATERIAL SHIFT
 ```
 
-The monitoring layer therefore detects a material population shift before relying only on downstream harm observations.
+### Feedback loop
+
+The feedback module (`controlplane/feedback.py`) attributes each human override back to the specific fired rule that produced the decision being overridden — not just the action.
+
+This is the distinction that matters operationally: two `review` decisions can be driven by completely different rules. A rule-level override rate tells you exactly which entry in `config/policies.yaml` is losing the desk's trust. The recommendation output names the axis (use_case / jurisdiction / sector) and the specific condition, pointing directly to the config edit required.
 
 ### Audit trail
 
-Decisions are recorded through the audit layer, providing information about:
-
-* Input and response
-* Risk evidence
-* Policy context
-* Selected action
-* Reasons
-* Session information
-
-This supports post-hoc investigation and operational monitoring.
+Every decision — including input gate decisions — is recorded with: input and response, risk evidence, policy context, fired rules (tagged by axis), selected action, reasons, and session information.
 
 ---
 
 ## Evaluation
 
-ControlPlane.ai is a general AI control framework. Different components are therefore evaluated using datasets and experiments appropriate to the property being tested.
-
 ### RAGTruth benchmark
 
-**The performance/grounding component is evaluated on the RAGTruth benchmark.**
-
-RAGTruth provides externally labelled real LLM responses for evaluating hallucination and grounding behaviour.
-
-The current evaluation uses:
-
-* **900 RAGTruth QA test responses**
-* Hallucinated-response base rate: **17.8%**
+The performance/grounding component is evaluated on the RAGTruth benchmark (900 QA test responses, 17.8% hallucinated base rate).
 
 Using the default TF-IDF grounding backend:
 
@@ -493,32 +520,16 @@ At the Youden-optimal threshold of 0.692:
 | Recall    |   0.76 |
 | F1        |   0.42 |
 
-The benchmark demonstrates meaningful discrimination above random performance, while also showing that grounding remains an imperfect signal. The control layer therefore does not depend on hallucination detection alone.
-
 ### Probability calibration
-
-The performance probability was evaluated before and after isotonic calibration.
 
 | Metric      |    Raw | Calibrated |
 | ----------- | -----: | ---------: |
 | Brier score | 0.3757 |     0.1518 |
 | ECE         | 0.4830 |     0.1248 |
 
-Both metrics decreased substantially after calibration.
-
-A reject-option experiment also showed:
-
-| Automatic answer rate | Accuracy |
-| --------------------: | -------: |
-|                  100% |     0.82 |
-|                   80% |     0.85 |
-|                   60% |     0.90 |
-
-This supports the use of human escalation for lower-confidence cases.
+A reject-option experiment showed accuracy rising from 82% (full coverage) to 90% (60% automatic coverage) — supporting use of human escalation for lower-confidence cases.
 
 ### Loss backtest
-
-The policy is evaluated by realised loss after the true state of each interaction is known.
 
 | Policy            | Mean realised loss |
 | ----------------- | -----------------: |
@@ -528,33 +539,19 @@ The policy is evaluated by realised loss after the true state of each interactio
 | ControlPlane      |          **26.67** |
 | Oracle            |               0.00 |
 
-The current cost-derived ControlPlane policy captured:
-
-**97.8% of the avoidable loss between the unguarded system and the oracle benchmark.**
-
-The block-everything baseline is intentionally included. It demonstrates why minimising harm alone is insufficient: a system can reduce loss by refusing to serve anything while destroying the utility of the AI system.
+ControlPlane captured **97.8% of the avoidable loss** between the unguarded system and the oracle benchmark.
 
 ### Prevalence sensitivity
 
-The evaluation dataset has a much higher harmful-response prevalence than expected live traffic.
-
-The prototype therefore evaluates the effect of different harmful base rates:
-
 | Policy                          |       2% |       5% |      10% |      50% |
 | ------------------------------- | -------: | -------: | -------: | -------: |
-| No guardrail                    |     37.5 |     93.7 |    187.3 |    936.7 |
-| Block everything                |    153.5 |    148.8 |    141.0 |     78.3 |
-| Static thresholds               |      6.8 |     15.6 |     30.2 |    147.3 |
-| ControlPlane                    |     27.6 |     27.5 |     27.5 |     26.9 |
-| ControlPlane + prior correction | **16.3** | **21.0** | **28.2** | **30.1** |
-
-This makes the prevalence assumption explicit rather than implicitly treating an evaluation-set class balance as production reality.
+| No guardrail                    |     37.5 |     93.7 |     187.3 |    936.7 |
+| Block everything                |    153.5 |    148.8 |     141.0 |     78.3 |
+| Static thresholds               |      6.8 |     15.6 |      30.2 |    147.3 |
+| ControlPlane                    |     27.6 |     27.5 |      27.5 |     26.9 |
+| ControlPlane + prior correction | **16.3** | **21.0** |  **28.2** | **30.1** |
 
 ### Fairness audit
-
-The prototype includes a counterfactual fairness audit using matched responses where one protected-attribute token is changed while the underlying response meaning remains the same.
-
-Results:
 
 | Attribute   | Counterfactual flip rate | Disparate impact | Four-fifths rule |
 | ----------- | -----------------------: | ---------------: | ---------------- |
@@ -562,25 +559,9 @@ Results:
 | Region      |                     0.0% |            1.000 | PASS             |
 | Name origin |                     2.8% |            0.938 | PASS             |
 
-The name-origin experiment identified a small but non-zero decision flip rate despite a very small mean probability difference.
-
-This demonstrates an important property of the audit: a detector can be nearly invariant in score while a small perturbation near a decision boundary can still change the final action.
-
 ### Multi-turn exposure
 
-An eight-turn session experiment demonstrates cumulative risk.
-
-No individual turn was blocked, but cumulative probability of at least one harmful served response reached approximately **19%**.
-
-The session controller detected increasing cumulative exposure and triggered a session-level control action.
-
-### Robustness
-
-The decision layer was also tested under a detector substitution.
-
-Replacing the toxicity component with Detoxify changed the ControlPlane loss-recovery result only marginally, while the static-threshold baseline changed more substantially.
-
-This supports the design principle of separating detector outputs from policy logic.
+An eight-turn session experiment demonstrated cumulative risk: no individual turn was blocked, but cumulative probability of at least one harmful served response reached approximately 19%, triggering a session-level control action.
 
 ---
 
@@ -606,6 +587,7 @@ ControlPlane.ai/
 │   ├── feedback.py
 │   ├── grounding.py
 │   ├── input_gate.py
+│   ├── judge.py
 │   ├── llm.py
 │   ├── pipeline.py
 │   ├── policy.py
@@ -618,9 +600,6 @@ ControlPlane.ai/
 ├── data/
 │   ├── anomaly_profiles.json
 │   ├── calibrator.json
-│   ├── drift/
-│   ├── fairness/
-│   ├── session/
 │   └── ragtruth/
 │
 ├── scripts/
@@ -633,7 +612,12 @@ ControlPlane.ai/
 │   ├── fairness_audit.py
 │   ├── drift_monitor.py
 │   ├── session_demo.py
-│   └── cost_frontier.py
+│   ├── cost_frontier.py
+│   ├── feedback_report.py
+│   ├── test_input_gate.py
+│   ├── test_jurisdiction.py
+│   ├── test_sector.py
+│   └── test_judge.py
 │
 └── README.md
 ```
@@ -645,40 +629,35 @@ ControlPlane.ai/
 | `pipeline.py`          | Orchestrates input control, response evaluation, policy and audit |
 | `input_gate.py`        | Pre-generation request control                                    |
 | `detectors.py`         | Performance, responsibility and cost controls                     |
+| `judge.py`             | AI-as-judge LLM grounding second opinion                          |
 | `dimension_anomaly.py` | Statistical anomaly profiles for the control dimensions           |
-| `calibration.py`       | Probability calibration                                           |
+| `calibration.py`       | Probability calibration and OOD interval widening                 |
 | `decision_theory.py`   | Harm probability and expected-loss calculations                   |
-| `policy.py`            | Context-specific policy and action selection                      |
+| `policy.py`            | Three-axis policy (use case × jurisdiction × sector)              |
 | `session.py`           | Cumulative multi-turn exposure                                    |
 | `audit.py`             | Decision logging                                                  |
-| `feedback.py`          | Feedback and override handling                                    |
-| `monitoring.py`        | Population-level monitoring                                       |
-| `grounding.py`         | Context grounding logic                                           |
+| `feedback.py`          | Rule-level feedback and override attribution                      |
+| `monitoring.py`        | Population-level drift monitoring                                 |
+| `grounding.py`         | TF-IDF, embedding, and NLI grounding backends                     |
+| `stats.py`             | Statistical kernel: Mahalanobis, EWMA, Poisson, residual models   |
 
 ---
 
 ## Requirements
 
-The prototype is implemented in Python and uses standard machine learning, statistical modelling, API, and dashboard libraries.
+Python virtual environment. Primary dependencies: scikit-learn, numpy, pandas, fastapi, streamlit, pyyaml.
 
-The primary environment is a Python virtual environment.
-
-The default prototype is designed to support local, reproducible execution using the repository's included data and deterministic components.
+Optional: `groq` (AI-as-judge), `transformers` + `torch` (NLI and embedding backends), `sentence-transformers` (embedding backend).
 
 ---
 
 ## Installation
 
-Clone the repository and create a virtual environment:
-
 ```bash
 git clone https://github.com/manyagupta-21/ControlPlane.ai.git
 cd ControlPlane.ai
-
 python -m venv .venv
 ```
-
-Activate the environment.
 
 ### Windows PowerShell
 
@@ -691,8 +670,6 @@ Activate the environment.
 ```bash
 source .venv/bin/activate
 ```
-
-Install dependencies:
 
 ```bash
 pip install -r requirements.txt
@@ -708,21 +685,11 @@ pip install -r requirements.txt
 uvicorn app.api:app --reload
 ```
 
-The API runs locally on:
-
-```text
-http://127.0.0.1:8000
-```
-
 ### Start the Streamlit interface
-
-In a second terminal with the virtual environment activated:
 
 ```bash
 streamlit run app/streamlit_app.py
 ```
-
-The Streamlit interface provides the interactive ControlPlane workflow for testing sample or custom interactions.
 
 ### Typical workflow
 
@@ -732,7 +699,7 @@ The Streamlit interface provides the interactive ControlPlane workflow for testi
 3. Generate or provide the AI response
 4. Run ControlPlane
 5. Inspect performance, responsibility and cost evidence
-6. Inspect anomaly information
+6. Inspect anomaly information and judge verdict
 7. View the selected action
 8. Inspect the recorded decision information
 ```
@@ -741,18 +708,10 @@ The Streamlit interface provides the interactive ControlPlane workflow for testi
 
 ## Running the evaluation suite
 
-The repository includes scripts for reproducing the main statistical evaluations.
-
 ### Fit anomaly profiles
 
 ```bash
 python scripts/fit_profiles.py
-```
-
-This fits the dimension-specific anomaly profiles and writes:
-
-```text
-data/anomaly_profiles.json
 ```
 
 ### Calibrate the performance probability
@@ -761,20 +720,11 @@ data/anomaly_profiles.json
 python scripts/calibrate.py
 ```
 
-This evaluates calibration and writes:
-
-```text
-data/calibrator.json
-```
-
 ### Evaluate on RAGTruth
 
 ```bash
 python scripts/evaluate_ragtruth.py
 ```
-
-```markdown
-The default command evaluates the TF-IDF grounding backend against the RAGTruth QA test set. Alternative grounding backends can also be selected through the same evaluation interface.
 
 ### Evaluate the full control layer
 
@@ -818,44 +768,38 @@ python scripts/session_demo.py
 python scripts/cost_frontier.py
 ```
 
+### Run the feedback report
+
+```bash
+python scripts/simulate_traffic.py --reset   # generate audit data
+python scripts/feedback_report.py            # rule-level override attribution
+```
+
+### Test the AI-as-judge
+
+```bash
+pip install groq
+$env:GROQ_API_KEY = "your_free_key"   # from https://console.groq.com
+python scripts/test_judge.py
+```
+
+Without `GROQ_API_KEY` the demo runs in fail-open mode showing `verdict: unavailable`. The pipeline continues normally in all cases.
+
+### Test governance axes
+
+```bash
+python scripts/test_input_gate.py    # use-case-aware pre-generation gate
+python scripts/test_jurisdiction.py  # EU / IN / US jurisdiction composition
+python scripts/test_sector.py        # healthcare / finance sector composition
+```
+
 ---
 
 ## Configuration
 
-The main policy configuration is:
+The main policy configuration is `config/policies.yaml`.
 
-```text
-config/policies.yaml
-```
-
-The policy file controls the business context used by the decision layer.
-
-The current configuration distinguishes:
-
-```text
-customer_facing
-internal_copilot
-regulated_decision
-```
-
-and supports contextual variation through:
-
-```text
-use case
-jurisdiction
-sector
-```
-
-The configuration also contains:
-
-* Risk weights
-* Action costs
-* Latency budgets
-* Hard governance rules
-
-The important design principle is that **business costs are inputs to the policy rather than manually selected probability thresholds**.
-
-When the cost assumptions change, the corresponding decision bands are recomputed.
+The important design principle: **business costs are inputs to the policy rather than manually selected probability thresholds**. When the cost assumptions change, the corresponding decision bands are recomputed automatically.
 
 ---
 
@@ -863,41 +807,51 @@ When the cost assumptions change, the corresponding decision bands are recompute
 
 ### FastAPI starts but `/` returns 404
 
-The API service is not required to expose a root webpage. A `404 Not Found` response at `/` does not necessarily indicate that the service has failed.
-
-Use the API routes exposed by `app/api.py` or the Streamlit interface.
+The API service is not required to expose a root webpage. Use the API routes in `app/api.py` or the Streamlit interface.
 
 ### PowerShell blocks virtual-environment activation
 
-Run:
-
 ```powershell
 Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process
-```
-
-Then:
-
-```powershell
 .\.venv\Scripts\Activate.ps1
 ```
 
 ### Evaluation outputs are missing
 
-Run the profile and calibration steps before the dependent evaluations:
+Run the profile and calibration steps first:
 
 ```bash
 python scripts/fit_profiles.py
 python scripts/calibrate.py
 ```
 
-This generates the required statistical artefacts under `data/`.
+### AI-as-judge returns `unavailable`
 
-### Optional model dependencies
+Install the Groq package and set your API key:
 
-Some specialised detectors can use optional external libraries. The default prototype retains local components so that the core control pipeline can be demonstrated without requiring access to a proprietary foundation model or model internals.
+```bash
+pip install groq
+$env:GROQ_API_KEY = "your_key"   # free key at https://console.groq.com
+```
+
+Without the key the pipeline continues normally with TF-IDF as the sole grounding score.
+
+### Toxicity backend selection
+
+```powershell
+$env:CONTROLPLANE_TOXICITY = "lexicon"    # default, offline
+$env:CONTROLPLANE_TOXICITY = "detoxify"   # requires pip install detoxify
+```
+
+### Grounding backend selection
+
+```powershell
+$env:CONTROLPLANE_GROUNDING = "tfidf"         # default, offline
+$env:CONTROLPLANE_GROUNDING = "tfidf+judge"   # TF-IDF + LLM judge (requires groq)
+$env:CONTROLPLANE_GROUNDING = "nli"           # NLI cross-encoder (CPU: ~5s/response)
+```
 
 ---
-
 
 ## Maintainers
 
