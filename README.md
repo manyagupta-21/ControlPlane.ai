@@ -687,7 +687,10 @@ uvicorn app.api:app --reload
 
 ### Start the Streamlit interface
 
-```bash
+The AI-as-judge feature requires a Groq API key. Set `GROQ_API_KEY` before starting Streamlit.
+
+```powershell
+$env:GROQ_API_KEY = "your_free_key"
 streamlit run app/streamlit_app.py
 ```
 
