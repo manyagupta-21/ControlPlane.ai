@@ -16,6 +16,7 @@ import yaml
 from .schemas import DetectorResult, Decision, escalate
 from .scoring import combine
 from .decision_theory import from_config, harm_probability
+from .calibration import widen
 
 
 class PolicyEngine:
@@ -59,16 +60,41 @@ class PolicyEngine:
                 calibrated = r.detail.get("calibrated_hallucination_prob")
         p_harm = harm_probability(per_dim, calibrated)
 
+        # --- STEP 1C: out-of-domain widening ------------------------------
+        # Anomaly detection reaches the decision HERE, and only here. It does
+        # not add risk (unusual is not harmful); it widens the confidence
+        # interval on P(harm) and the band is read off the upper end. A response
+        # scored outside the envelope the calibrator was validated on gets a
+        # conservative add-on, exactly as a model used outside its validated
+        # domain would under any model-risk framework. Normal traffic has
+        # severity ~0, so its p_decision ~ p_harm and its action is unchanged.
+        ood = 0.0
+        for r in results:
+            if r.name == "performance":
+                a = r.detail.get("anomaly") or {}
+                if a.get("fitted"):
+                    ood = float(a.get("ood_severity", 0.0))
+                    if (a.get("window") or {}).get("population_shifted"):
+                        ood = 1.0     # a confirmed population shift is full OOD
+        band = widen(p_harm, ood)
+        p_decision = band["p_decision"]
+
         lm = self.loss_models.get(use_case)
-        action = self._band_action(use_case, p_harm)
+        action = self._band_action(use_case, p_decision)
         reasons, fired = [], []
 
+        if band["widened_by"] > 0.02:
+            reasons.append(
+                f"OOD widening: p_point={band['p_point']} -> p_decision={p_decision} "
+                f"(severity {band['ood_severity']}, effective n {band['n_effective']}); "
+                f"deciding on the upper bound because this response sits outside "
+                f"the validated envelope")
         if lm is not None:
-            reasons.append(lm.explain(p_harm))
+            reasons.append(lm.explain(p_decision))
             reasons.append("derived bands (from cost model): "
                            + ", ".join(f"{k}>={v}" for k, v in self.thresholds[use_case].items()))
         else:
-            reasons.append(f"p_harm={p_harm} -> band '{action}' (static thresholds)")
+            reasons.append(f"p_harm={p_decision} -> band '{action}' (static thresholds)")
         if calibrated is None:
             reasons.append("note: uncalibrated performance score used as P(harm) proxy")
 
@@ -92,8 +118,8 @@ class PolicyEngine:
             action=action,
             risk_scores={k: round(v, 3) for k, v in per_dim.items()},
             overall_risk=overall,
-            p_harm=p_harm,
-            expected_loss=(lm.optimal_action(p_harm)[1] if lm else {}),
+            p_harm=p_decision,
+            expected_loss=(lm.optimal_action(p_decision)[1] if lm else {}),
             thresholds_used=dict(self.thresholds[use_case]),
             reasons=reasons,
             fired_rules=fired,

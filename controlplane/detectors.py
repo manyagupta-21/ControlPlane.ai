@@ -12,6 +12,28 @@ import re, time
 from .schemas import Interaction, DetectorResult
 
 # ---------------------------------------------------------------------------
+# Statistical anomaly detection is a METHOD each dimension applies to its own
+# quantities, not a fourth detector. The three per-dimension components share
+# one fitted artefact (data/anomaly_profiles.json, written by
+# scripts/fit_profiles.py) and are loaded ONCE per process here, so every
+# detector instance reuses the same profile rather than re-reading the file.
+#
+# STEP 1B CONTRACT: the anomaly output rides along in DetectorResult.detail and
+# sets a few new boolean flags. It does NOT change any detector's `risk`, and it
+# does NOT feed p_harm. Decisions are byte-for-byte identical to before this
+# step. (Step 1C is where the anomaly signal is allowed to affect a decision,
+# through interval widening in the policy layer — a separate, visible change.)
+# ---------------------------------------------------------------------------
+_PROFILES = None
+
+def _profiles():
+    global _PROFILES
+    if _PROFILES is None:
+        from .dimension_anomaly import load_profiles
+        _PROFILES = load_profiles()
+    return _PROFILES
+
+# ---------------------------------------------------------------------------
 # Lightweight text similarity (TF-IDF cosine) with no external downloads.
 # Used for grounding (response vs source context) and self-consistency.
 # ---------------------------------------------------------------------------
@@ -50,6 +72,9 @@ class PerformanceDetector:
             grounding = get_backend(os.environ.get("CONTROLPLANE_GROUNDING", "tfidf"))
         self.grounding = grounding
         self.ungrounded_thr = ungrounded_thr
+        # per-dimension anomaly: is this answer's SUPPORT PROFILE + structure
+        # unusual, once response length is regressed out? (dimension_anomaly.py)
+        self.anomaly = _profiles()[0]
         # optional calibration + abstention layer (fitted by scripts/calibrate.py)
         self.calibrator = None
         self.abstain_band = (0.40, 0.60)
@@ -89,6 +114,19 @@ class PerformanceDetector:
                   "self_consistency": round(consistency, 3) if consistency is not None else None,
                   **{f"g_{k}": v for k, v in gdetail.items()}}
 
+        # --- statistical anomaly, performance dimension --------------------
+        # Reported, never added to `risk`: an unusual support profile is a
+        # reason to distrust the probability, not evidence of harm. It reaches
+        # the decision layer (in step 1C) through interval widening, not here.
+        if x.context:
+            a = self.anomaly.run(x.response, x.context)
+            detail["anomaly"] = a
+            if a.get("fitted"):
+                flags["support_profile_anomalous"] = bool(a.get("anomalous"))
+                flags["underexplained_for_length"] = bool(a.get("underexplained_for_length"))
+                if (a.get("window") or {}).get("population_shifted"):
+                    flags["performance_population_shift"] = True
+
         # calibration + abstention: map raw grounding risk -> honest probability,
         # and flag the uncertain middle band for escalation to a human.
         if self.calibrator is not None and grounding_risk is not None:
@@ -127,6 +165,9 @@ class ResponsibilityDetector:
 
     def __init__(self):
         import os
+        # per-dimension anomaly: Poisson tail on the PII entity COUNT + an EWMA
+        # control chart on the population flag rate (dimension_anomaly.py).
+        self.anomaly = _profiles()[1]
         # Optional production PII backend (Microsoft Presidio). Enable with
         # CONTROLPLANE_PII=presidio + `pip install presidio-analyzer`; falls back
         # to the regex patterns automatically if unavailable.
@@ -209,7 +250,17 @@ class ResponsibilityDetector:
             "toxicity_high": tox_score >= 0.5,
             "toxicity_any": tox_score >= 0.05,
         }
-        detail = {"pii_entities": entities, "toxic_terms": tox_hits, "bias_cues": len(bias_hits)}
+        # --- statistical anomaly, responsibility dimension ----------------
+        # `pii_detected` cannot tell one incidental email from a dump of forty.
+        # A Poisson tail against the fitted rate can, and a bulk disclosure is a
+        # distinct incident with a distinct escalation path.
+        a = self.anomaly.run(pii_count, tox_score)
+        flags["pii_bulk_disclosure"] = bool(a.get("pii_bulk_disclosure"))
+        if a.get("rate_drift"):
+            flags["responsibility_rate_drift"] = True
+
+        detail = {"pii_entities": entities, "toxic_terms": tox_hits,
+                  "bias_cues": len(bias_hits), "anomaly": a}
         return DetectorResult(self.name, round(risk, 3), flags, detail, self.speed,
                               (time.perf_counter() - t0) * 1000)
 
@@ -225,6 +276,11 @@ class CostDetector:
     speed = "async"
 
     PRICE_PER_1K = {"small": 0.0005, "large": 0.010}   # illustrative $/1k tokens
+
+    def __init__(self):
+        # per-dimension anomaly: log-token residual conditional on the query,
+        # plus a Poisson tail on regenerations (dimension_anomaly.py).
+        self.anomaly = _profiles()[2]
 
     def _tokens(self, text: str) -> int:
         return int(len(text.split()) * 1.3) + 1
@@ -245,15 +301,28 @@ class CostDetector:
             waste += 0.4
         risk = min(1.0, waste)
 
-        flags = {"oversized_model": oversized, "excess_regenerations": x.regenerations >= 2}
+        # --- statistical anomaly, cost dimension --------------------------
+        # Conditional on the query, not a flat rule: `verbose_for_query` when
+        # the answer is far longer than its query predicts, and a Poisson tail
+        # on regenerations instead of `>= 2`.
+        a = self.anomaly.run(self._tokens(x.query), self._tokens(x.response),
+                             x.regenerations)
+        flags = {"oversized_model": oversized,
+                 "excess_regenerations": x.regenerations >= 2,
+                 "verbose_for_query": bool(a.get("verbose_for_query")),
+                 "rework_anomaly": bool(a.get("rework_anomaly"))}
         detail = {"est_tokens": toks, "est_cost_usd": round(cost, 5),
                   "model_used": x.model_used, "regenerations": x.regenerations,
-                  "recommended_model": "small" if easy else "large"}
+                  "recommended_model": "small" if easy else "large",
+                  "anomaly": a}
         return DetectorResult(self.name, round(risk, 3), flags, detail, self.speed,
                               (time.perf_counter() - t0) * 1000)
 
 
 def default_detectors(grounding=None):
-    from .anomaly import AnomalyDetector
+    # The old standalone AnomalyDetector is gone: anomaly detection now lives
+    # inside each of the three dimensions (see the `.anomaly` component on each
+    # detector above). controlplane/anomaly.py and scripts/anomaly_demo.py are
+    # now dead code and can be deleted.
     return [PerformanceDetector(grounding=grounding), ResponsibilityDetector(),
-            CostDetector(), AnomalyDetector()]
+            CostDetector()]
