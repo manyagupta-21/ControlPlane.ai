@@ -65,19 +65,21 @@ def health():
 async def guarded_completion(req: GuardRequest):
     t0 = time.perf_counter()
 
-    # 0) INPUT-SIDE GATE -- check the prompt before spending a generation
-    # call on it. Everything else in this system governs the model's OUTPUT;
-    # this is the one place that looks at what the user asked.
-    gate = cp.check_input(req.prompt)
-    if gate["action"] == "block":
+        # 0) INPUT-SIDE GATE -- check the prompt before spending a generation
+    # call on it, gated by this request's own use_case/jurisdiction/sector
+    # (not a rule blind to who's asking), and logged either way.
+    gate = cp.check_input(req.prompt, use_case=req.use_case,
+                          jurisdiction=req.jurisdiction, sector=req.sector,
+                          interaction_id=f"live-{int(t0*1000)}-{id(req)}-gate")
+    if gate.action == "block":
         return GuardResponse(
             action="block",
             served_response=SAFE_MESSAGE,
             raw_response="",
-            overall_risk=gate["risk"],
-            risk_scores={"input_gate": gate["risk"]},
-            reasons=[f"blocked at input gate before generation: {gate['flags']}"],
-            fired_rules=["input_gate:pii_or_toxicity"],
+            overall_risk=gate.overall_risk,
+            risk_scores=gate.risk_scores,
+            reasons=gate.reasons,
+            fired_rules=gate.fired_rules,
             provider=llm.name,
             latency_ms=round((time.perf_counter() - t0) * 1000, 1),
         )

@@ -65,6 +65,7 @@ class Decision:
     fired_rules: list[str] = field(default_factory=list)
     detector_results: list[dict] = field(default_factory=list)
     total_latency_ms: float = 0.0
+    stage: str = "output"              # "output" (post-generation, default) | "input_gate" (pre-generation)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)

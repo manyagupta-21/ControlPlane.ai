@@ -65,6 +65,33 @@ class PolicyEngine:
             return []
         return entry.get("hard_rules", [])
 
+    def _apply_three_axes(self, use_case: str, flags: dict, jurisdiction: str,
+                          sector: str, action: str, reasons: list, fired: list) -> str:
+        """The composition every decision in this system goes through: use_case
+        hard_rules, then jurisdiction hard_rules, then sector hard_rules, each
+        only escalating (never de-escalating) on top of what came before.
+        Shared by decide() (post-generation, score-driven) and decide_gate()
+        (pre-generation, flags-only) so there is one place this logic lives,
+        not one copy per call site."""
+        def apply_rules(rules: list[dict], tag: str):
+            nonlocal action
+            for rule in rules:
+                cond = rule["if"]
+                if flags.get(cond):
+                    new_action = escalate(action, rule["action"])
+                    if new_action != action:
+                        reasons.append(f"[{tag}] rule '{cond}' -> escalate to '{rule['action']}'")
+                        action = new_action
+                    fired.append(f"{tag}:{cond}")
+
+        uc = self.use_cases.get(use_case, {})
+        apply_rules(uc.get("hard_rules", []), f"use_case:{use_case}")
+        apply_rules(self._scoped_rules(self.jurisdictions, jurisdiction, use_case),
+                    f"jurisdiction:{jurisdiction}")
+        apply_rules(self._scoped_rules(self.sectors, sector, use_case),
+                    f"sector:{sector}")
+        return action
+
     def decide(self, interaction_id: str, use_case: str,
                results: list[DetectorResult], jurisdiction: str = "US",
                sector: str = "general", total_latency_ms: float = 0.0) -> Decision:
@@ -126,27 +153,9 @@ class PolicyEngine:
         for r in results:
             flags.update({k: v for k, v in r.flags.items()})
 
-        def apply_rules(rules: list[dict], tag: str):
-            nonlocal action
-            for rule in rules:
-                cond = rule["if"]
-                if flags.get(cond):
-                    new_action = escalate(action, rule["action"])
-                    if new_action != action:
-                        reasons.append(f"[{tag}] rule '{cond}' -> escalate to '{rule['action']}'")
-                        action = new_action
-                    fired.append(f"{tag}:{cond}")
-
-        # --- axis 1: use_case hard_rules -----------------------------------
-        apply_rules(uc.get("hard_rules", []), f"use_case:{use_case}")
-
-        # --- axis 2: jurisdiction hard_rules (composes with axis 1) --------
-        apply_rules(self._scoped_rules(self.jurisdictions, jurisdiction, use_case),
-                    f"jurisdiction:{jurisdiction}")
-
-        # --- axis 3: sector hard_rules (composes with axes 1 and 2) --------
-        apply_rules(self._scoped_rules(self.sectors, sector, use_case),
-                    f"sector:{sector}")
+        # --- axes 1-3: use_case, then jurisdiction, then sector hard_rules --
+        action = self._apply_three_axes(use_case, flags, jurisdiction, sector,
+                                        action, reasons, fired)
 
         return Decision(
             interaction_id=interaction_id,
@@ -159,6 +168,46 @@ class PolicyEngine:
             thresholds_used=dict(self.thresholds[use_case]),
             reasons=reasons,
             fired_rules=fired,
-            detector_results=[r.__dict__ for r in results],
+                        detector_results=[r.__dict__ for r in results],
             total_latency_ms=round(total_latency_ms, 2),
+        )
+
+    def decide_gate(self, interaction_id: str, use_case: str, flags: dict,
+                    detail: dict, risk: float, jurisdiction: str = "US",
+                    sector: str = "general", total_latency_ms: float = 0.0) -> Decision:
+        """Pre-generation counterpart to decide(). There is no response yet, so
+        there is no p_harm to derive a cost-optimal band from -- only the flags
+        a prompt-side scan produced (pii_detected, toxicity_high, ...). The
+        action is decided purely by the SAME three-axis hard_rule composition
+        decide() uses, so a customer_facing prompt and an internal_copilot
+        prompt carrying the same PII are governed by the appetite each use
+        case already states in policies.yaml, not by one blanket rule blind to
+        who's asking. 'review' here means 'let it through, but flag it' (the
+        same tiered meaning it has post-generation) -- only 'block' stops
+        generation; the caller decides how to act on the returned Decision."""
+        if use_case not in self.use_cases:
+            use_case = self.cfg.get("default_use_case", "internal_copilot")
+
+        reasons, fired = [], []
+        action = self._apply_three_axes(use_case, flags, jurisdiction, sector,
+                                        "allow", reasons, fired)
+        if not fired:
+            reasons.append(f"input gate: no rule fired for use_case={use_case}, "
+                           f"jurisdiction={jurisdiction}, sector={sector} -> allow")
+
+        return Decision(
+            interaction_id=interaction_id,
+            use_case=use_case,
+            action=action,
+            risk_scores={"input_gate": round(risk, 3)},
+            overall_risk=round(risk, 3),
+            p_harm=0.0,
+            thresholds_used={},
+            reasons=reasons,
+            fired_rules=fired,
+            detector_results=[{"name": "input_gate", "risk": risk,
+                               "flags": flags, "detail": detail,
+                               "speed": "inline", "latency_ms": total_latency_ms}],
+            total_latency_ms=round(total_latency_ms, 2),
+            stage="input_gate",
         )

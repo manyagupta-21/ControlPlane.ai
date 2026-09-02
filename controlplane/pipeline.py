@@ -6,7 +6,7 @@ waits for) is measured separately from total wall-clock, so we can show that
 heavy checks run in parallel and don't sit on the critical path.
 """
 from __future__ import annotations
-import asyncio, time
+import asyncio, time, itertools
 from .schemas import Interaction, Decision
 from .detectors import default_detectors
 from .policy import PolicyEngine
@@ -15,17 +15,29 @@ from .input_gate import InputGate
 
 
 class ControlPlane:
+    _gate_ids = itertools.count()  # monotonic counter -> unique ids even within one ms
+
     def __init__(self, policy_path: str, audit_path: str = "data/audit_log.jsonl",
                  detectors=None):
         self.detectors = detectors or default_detectors()
         self.policy = PolicyEngine(policy_path)
         self.audit = AuditLog(audit_path)
-        self.input_gate = InputGate()
+        self.input_gate = InputGate(self.policy)
 
-    def check_input(self, prompt: str) -> dict:
-        """Pre-generation gate. Call this BEFORE the LLM call; if it returns
-        action='block', skip generation entirely."""
-        return self.input_gate.check(prompt)
+    def check_input(self, prompt: str, use_case: str = "customer_facing",
+                    jurisdiction: str = "US", sector: str = "general",
+                    interaction_id: str | None = None, log: bool = True) -> Decision:
+        """Pre-generation gate. Call this BEFORE the LLM call; if the returned
+        Decision.action == 'block', skip generation entirely. use_case /
+        jurisdiction / sector are the SAME three axes decide() uses, so a
+        prompt is gated with the appetite its own use case actually states,
+        not a rule blind to who's asking. Logged through the same audit trail
+        as output-side decisions (Decision.stage == 'input_gate')."""
+        iid = interaction_id or f"gate-{int(time.time() * 1000)}-{next(self._gate_ids)}"
+        decision = self.input_gate.check(prompt, iid, use_case, jurisdiction, sector)
+        if log:
+            self.audit.record(decision)
+        return decision
 
     async def _run_all(self, x: Interaction):
         # each detector runs in a thread so they truly overlap
